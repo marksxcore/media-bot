@@ -8,6 +8,7 @@ import xml.etree.ElementTree as ET
 import google.generativeai as genai
 from google.generativeai.types import RequestOptions
 from io import BytesIO
+from bs4 import BeautifulSoup # НОВАЯ БИБЛИОТЕКА
 
 # Настройка Gemini
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
@@ -15,7 +16,6 @@ model = genai.GenerativeModel("gemini-3.5-flash-lite")
 
 # --- ПОЛНЫЙ СПИСОК ИСТОЧНИКОВ ---
 FEEDS = [
-    # Зарубежные гиганты
     "https://variety.com/feed/",
     "https://www.hollywoodreporter.com/feed/",
     "https://www.rollingstone.com/music/music-news/feed/",
@@ -26,30 +26,24 @@ FEEDS = [
     "https://netinfluencer.com/feed/",
     "https://creatoriq.com/blog/rss.xml",
     "https://www.adweek.com/category/influencer-marketing/feed/",
-    # Российские источники
     "https://lenta.ru/rss/news",
     "https://www.gazeta.ru/export/rss/first.xml",
     "https://aif.ru/rss/culture.php",
     "https://kulturomania.ru/feed/",
     "https://dzen.ru/bloggg/rss",
     "https://dzen.ru/russianteleweek.ru",
-    # SRSLY — медиа о блогерах и зумерах
     "https://srsly.ru/rss/",
-    # Дополнительные развлекательные
     "https://www.comingsoon.net/feed",
     "https://feeds.skynews.com/feeds/rss/entertainment.xml"
 ]
 
 CULTURE_KEYWORDS = ["кино", "фильм", "сериал", "музык", "песн", "альбом", "премьер", "трейлер", "режиссер", "актер", "блогер", "тиктокер", "инфлюенсер", "стример", "контент", "звезд", "артист", "шоу", "фестиваль", "концерт"]
 
-# ЖЕСТКИЙ ФИЛЬТР (политика, тяжелые болезни)
 BAD_WORDS = [
-    # Политика и война
     "ukraine", "war", "politics", "military", "election", "poll", "voter", "president", "government", "parliament",
     "украин", "войн", "политик", "спецоперац", "выборы", "явка", "избирател", "парламент", "президент", "правительств", "госдума",
     "кремль", "путин", "норвегия", "осло", "дипломатия", "нато", "санкции", "госдеп",
     "сербия", "белград", "премьер-министр", "кандидат", "оппозици",
-    # Тяжелые болезни
     "рак", "онкологи", "опухол", "химиотерап"
 ]
 
@@ -82,11 +76,10 @@ def get_news_from_feed(feed_url):
             link = item.find("link").text or ""
             
             if any(bad in (title + desc).lower() for bad in BAD_WORDS): continue
-            # Для российских источников проверяем ключевые слова культуры (кроме SRSLY, где всё про блогеров)
             if any(domain in feed_url for domain in ["lenta", "gazeta", "aif", "kulturomania", "dzen"]) and "srsly" not in feed_url:
                 if not any(kw in (title + desc).lower() for kw in CULTURE_KEYWORDS): continue
             
-            # Извлекаем картинку из RSS
+            # Пытаемся найти картинку в RSS
             image_url = None
             enclosure = item.find("enclosure")
             if enclosure is not None:
@@ -105,6 +98,29 @@ def get_news_from_feed(feed_url):
     except Exception:
         pass
     return news_list
+
+def get_image_from_article(article_url):
+    """Если картинки нет в RSS, парсим саму статью и ищем там картинку."""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        response = requests.get(article_url, timeout=10, headers=headers)
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Ищем теги og:image (мета-тег с картинкой, который используют все сайты)
+        og_image = soup.find("meta", property="og:image")
+        if og_image and og_image.get("content"):
+            return og_image["content"]
+            
+        # Если og:image нет, ищем первую большую картинку на странице
+        for img in soup.find_all("img"):
+            src = img.get("src") or img.get("data-src")
+            if src and src.startswith("http") and (".jpg" in src or ".png" in src or ".jpeg" in src):
+                # Игнорируем маленькие иконки и логотипы
+                if "logo" not in src.lower() and "icon" not in src.lower() and "avatar" not in src.lower():
+                    return src
+    except Exception as e:
+        print(f"Ошибка парсинга статьи: {e}")
+    return None
 
 def is_duplicate(title, history):
     if title in history:
@@ -168,7 +184,7 @@ def send_to_telegram(text, image_url):
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
     
-    # ПРИОРИТЕТ: Если в RSS есть картинка — скачиваем и отправляем как фото
+    # ОТПРАВЛЯЕМ ТОЛЬКО ЕСЛИ ЕСТЬ КАРТИНКА
     if image_url:
         try:
             img_response = requests.get(image_url, timeout=10)
@@ -181,22 +197,21 @@ def send_to_telegram(text, image_url):
             resp_photo = requests.post(url_photo, data=data, files=files, timeout=30)
             
             if resp_photo.status_code == 200:
-                print("Пост с картинкой из RSS опубликован!")
-                return
+                print("Пост с картинкой опубликован!")
             else:
                 print(f"Ошибка отправки фото: {resp_photo.text}")
         except Exception as e:
             print(f"Не удалось скачать картинку: {e}")
-
-    # ЗАПАСНОЙ ВАРИАНТ: Если картинки нет или она не скачалась — отправляем текст (Telegram подтянет превью)
-    try:
-        url_msg = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload_msg = {"chat_id": channel_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
-        resp = requests.post(url_msg, json=payload_msg, timeout=30)
-        if resp.status_code == 200:
-            print("Пост опубликован (текст с превью)!")
-    except Exception as e:
-        print(f"Сбой отправки текста: {e}")
+    else:
+        # Если картинки нет нигде, отправляем текст с превью (чтобы пост не был пустым)
+        try:
+            url_msg = f"https://api.telegram.org/bot{token}/sendMessage"
+            payload_msg = {"chat_id": channel_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
+            resp = requests.post(url_msg, json=payload_msg, timeout=30)
+            if resp.status_code == 200:
+                print("Пост опубликован (текст без картинки).")
+        except Exception as e:
+            print(f"Сбой отправки текста: {e}")
 
 if __name__ == "__main__":
     history = load_history()
@@ -217,10 +232,18 @@ if __name__ == "__main__":
         if is_duplicate(news['title'], history):
             print(f"Дубль пропущен: {news['title'][:30]}...")
             continue
+        
+        # ЛОГИКА КАРТИНОК
+        image_url = news['image_url']
+        
+        # Если в RSS нет картинки — идем парсить статью
+        if not image_url:
+            print(f"Картинки в RSS нет. Ищем в статье: {news['link'][:50]}...")
+            image_url = get_image_from_article(news['link'])
             
         post_text = generate_post_text(news['title'], news['link'], news['description'])
         if post_text:
-            send_to_telegram(post_text, news['image_url'])
+            send_to_telegram(post_text, image_url)
             history.append(news['title'])
             
             if index < len(all_news) - 1:
