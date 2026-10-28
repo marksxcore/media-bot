@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import random
 import time
 import requests
@@ -10,9 +11,7 @@ from io import BytesIO
 
 # Настройка Gemini
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
-# Используем две модели для обхода лимитов (если одна упрется, вторая продолжит)
-MODEL_NAME = "gemini-3.5-flash-lite"
-model = genai.GenerativeModel(MODEL_NAME)
+model = genai.GenerativeModel("gemini-3.5-flash-lite")
 
 # --- ПОЛНЫЙ СПИСОК ИСТОЧНИКОВ (18 ШТУК) ---
 FEEDS = [
@@ -38,18 +37,28 @@ FEEDS = [
 
 CULTURE_KEYWORDS = ["кино", "фильм", "сериал", "музык", "песн", "альбом", "премьер", "трейлер", "режиссер", "актер", "блогер", "тиктокер", "инфлюенсер", "стример", "контент", "звезд", "артист", "шоу", "фестиваль", "концерт"]
 
-# ЖЕСТКИЙ ФИЛЬТР ПОЛИТИКИ И ТЯЖЕЛЫХ БОЛЕЗНЕЙ
 BAD_WORDS = [
-    # Политика и война
     "ukraine", "war", "politics", "military", "election", "poll", "voter", "president", "government", "parliament",
     "украин", "войн", "политик", "спецоперац", "выборы", "явка", "избирател", "парламент", "президент", "правительств", "госдума",
     "сербия", "белград", "премьер-министр", "кандидат", "оппозици",
-    # Тяжелые болезни
     "рак", "онкологи", "опухол", "химиотерап"
 ]
 
-# Список уже опубликованных заголовков для защиты от дублей
-PUBLISHED_HEADLINES = []
+HISTORY_FILE = "history.json"
+MAX_HISTORY = 500
+
+def load_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return []
+    return []
+
+def save_history(history):
+    with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(history[-MAX_HISTORY:], f, ensure_ascii=False, indent=2)
 
 def get_news_from_feed(feed_url):
     news_list = []
@@ -67,7 +76,6 @@ def get_news_from_feed(feed_url):
             if any(domain in feed_url for domain in ["lenta", "gazeta", "aif", "kulturomania", "dzen"]):
                 if not any(kw in (title + desc).lower() for kw in CULTURE_KEYWORDS): continue
             
-            # Извлекаем картинку из RSS
             image_url = None
             enclosure = item.find("enclosure")
             if enclosure is not None:
@@ -87,13 +95,17 @@ def get_news_from_feed(feed_url):
         pass
     return news_list
 
-def is_duplicate(title):
-    """Проверяет, является ли новость дублем, через Gemini."""
-    if not PUBLISHED_HEADLINES:
-        return False
+def is_duplicate(title, history):
+    """Проверяет, является ли новость дублем (с учетом истории)."""
+    # 1. Быстрая проверка по точному совпадению
+    if title in history:
+        return True
     
-    # Берем последние 5 заголовков, чтобы не перегружать промт
-    recent = PUBLISHED_HEADLINES[-5:]
+    # 2. Умная проверка через Gemini (последние 5 новостей)
+    if not history:
+        return False
+        
+    recent = history[-5:]
     check_prompt = (
         f"Я собираюсь опубликовать новость с заголовком: '{title}'.\n"
         f"Вот список недавно опубликованных заголовков: {recent}.\n"
@@ -106,11 +118,9 @@ def is_duplicate(title):
         answer = response.text.strip().upper()
         return "ДА" in answer
     except Exception:
-        # Если ошибка (лимит/сбой), пропускаем проверку, чтобы не вставать
         return False
 
 def generate_post_text(title, link, description):
-    # Проверяем, есть ли в новости тема смерти
     is_sad_news = any(word in (title + description).lower() for word in ["умер", "смерть", "погиб", "dead", "death", "passed away"])
     
     if is_sad_news:
@@ -121,8 +131,7 @@ def generate_post_text(title, link, description):
     else:
         tone_instruction = (
             "Твой стиль: дерзко, коротко, без воды. Добавь эмодзи (3-5 штук), чтобы текст был живым. "
-            "Используй только тематические эмодзи (огонь, кино, музыка, театр). "
-            "КАТЕГОРИЧЕСКИ НЕ ИСПОЛЬЗУЙ медицинские эмодзи (таблетки, шприцы, пилюли 💊💉)."
+            "Используй только тематические эмодзи. КАТЕГОРИЧЕСКИ НЕ ИСПОЛЬЗУЙ медицинские эмодзи."
         )
 
     prompt = (
@@ -151,26 +160,26 @@ def generate_post_text(title, link, description):
             time.sleep(3)
     return None
 
-def send_to_telegram(text, image_url, link):
+def send_to_telegram(text, image_url):
     token = os.environ["TELEGRAM_BOT_TOKEN"]
     channel_id = os.environ["TELEGRAM_CHANNEL_ID"]
     
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
     
-    # 1. Сначала пробуем отправить текст и посмотреть, подтянет ли Telegram превью
+    # 1. Пробуем отправить текст (Telegram сам подтянет превью)
     try:
         url_msg = f"https://api.telegram.org/bot{token}/sendMessage"
         payload_msg = {"chat_id": channel_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
         resp = requests.post(url_msg, json=payload_msg, timeout=30)
         
         if resp.status_code == 200:
-            print("Текст с превью отправлен!")
+            print("Пост опубликован с превью!")
             return
     except Exception:
         pass
 
-    # 2. Если текст не отправился (или мы решили, что превью нет), шлем картинку из RSS
+    # 2. Если что-то пошло не так, скачиваем картинку из RSS
     if image_url:
         try:
             img_response = requests.get(image_url, timeout=10)
@@ -183,11 +192,12 @@ def send_to_telegram(text, image_url, link):
             resp_photo = requests.post(url_photo, data=data, files=files, timeout=30)
             
             if resp_photo.status_code == 200:
-                print("Пост с картинкой из RSS отправлен!")
+                print("Пост с картинкой из RSS опубликован!")
         except Exception as e:
             print(f"Ошибка отправки фото: {e}")
 
 if __name__ == "__main__":
+    history = load_history()
     random.shuffle(FEEDS)
     all_news = []
     seen_titles = set()
@@ -202,16 +212,17 @@ if __name__ == "__main__":
     print(f"Найдено новостей: {len(all_news)}")
     
     for index, news in enumerate(all_news):
-        # ПРОВЕРКА НА ДУБЛЬ
-        if is_duplicate(news['title']):
+        if is_duplicate(news['title'], history):
             print(f"Дубль пропущен: {news['title'][:30]}...")
             continue
             
         post_text = generate_post_text(news['title'], news['link'], news['description'])
         if post_text:
-            send_to_telegram(post_text, news['image_url'], news['link'])
-            # Запоминаем заголовок, чтобы не постить его снова
-            PUBLISHED_HEADLINES.append(news['title'])
+            send_to_telegram(post_text, news['image_url'])
+            history.append(news['title'])
             
             if index < len(all_news) - 1:
                 time.sleep(30)
+    
+    save_history(history)
+    print("История сохранена.")
