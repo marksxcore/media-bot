@@ -76,25 +76,30 @@ def get_news_from_feed(feed_url):
     return news_list
 
 def generate_post_text(title, link, description):
-    # КОРОТКИЙ И ЯРКИЙ ПРОМТ
+    # ИСПРАВЛЕННЫЙ ПРОМТ: убрана нумерация, добавлены отступы
     prompt = (
         "Ты — редактор канала 'MEDIA'. Твой стиль: дерзко, коротко, без воды. "
         "Перепиши эту новость на русский язык. Сделай это ОЧЕНЬ КОРОТКО: максимум 3-4 предложения. "
         "Текст должен быть ярким, с легкой иронией и эмодзи (3-5 штук). Никаких длинных абзацев.\n\n"
         f"Заголовок: {title}\nОписание: {description[:500]}\nСсылка: {link}\n\n"
-        "Формат ответа:\n"
-        "1. Яркий заголовок с эмодзи.\n"
-        "2. Текст (2-3 предложения) с эмодзи.\n"
-        "3. Ссылка: '🔗 [Источник](URL)'\n"
-        "4. Хэштеги: 3-4 штуки.\n\n"
-        "ВАЖНО: В самом конце, после хэштегов, добавь скрытую строку [IMG: тег1, тег2, тег3] — "
-        "3-5 конкретных английских слов для поиска картинки (например: cinema, red carpet, concert)."
+        "Формат ответа (СТРОГО без цифр и списков!):\n"
+        "Яркий заголовок с эмодзи.\n"
+        "Пустая строка.\n"
+        "Текст (2-3 предложения) с эмодзи.\n"
+        "Пустая строка.\n"
+        "Ссылка: '🔗 [Источник](URL)'\n"
+        "Хэштеги: 3-4 штуки (через пробел).\n\n"
+        "ВАЖНО: В самом конце добавь скрытую строку [IMG: тег1, тег2, тег3] — "
+        "3-5 конкретных английских слов для поиска картинки."
     )
     
     for attempt in range(3):
         try:
             response = model.generate_content(prompt, request_options=RequestOptions(timeout=30.0))
             full_text = response.text
+            
+            # Убираем возможные артефакты нумерации в начале (на всякий случай)
+            full_text = re.sub(r"^\d+\.\s*", "", full_text.strip())
             
             img_match = re.search(r"\[IMG:\s*(.*?)\]", full_text, re.IGNORECASE)
             search_query = "entertainment"
@@ -115,7 +120,6 @@ def get_image(query):
         return None
 
     url = "https://pixabay.com/api/"
-    # Увеличиваем выборку до 20 картинок, чтобы найти максимально подходящую
     params = {
         "key": api_key, 
         "q": query, 
@@ -128,7 +132,6 @@ def get_image(query):
         response = requests.get(url, params=params, timeout=15)
         data = response.json()
         if data.get("hits"):
-            # Берем случайную из 20 найденных, чтобы картинки не повторялись
             photo_url = random.choice(data["hits"])["largeImageURL"]
             img_data = requests.get(photo_url, timeout=15).content
             return BytesIO(img_data)
