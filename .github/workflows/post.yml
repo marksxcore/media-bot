@@ -2,13 +2,14 @@ name: MEDIA Bot
 
 on:
   schedule:
-    # Запуск каждые 15 минут
     - cron: '*/15 * * * *'
-  workflow_dispatch: # Кнопка для ручного запуска
+  workflow_dispatch:
 
 jobs:
   publish:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # <--- ВАЖНО: разрешаем запись в репозиторий
     steps:
       - uses: actions/checkout@v4
       
@@ -25,5 +26,11 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: python poster.py
+      
+      # ЭТОТ БЛОК СОХРАНЯЕТ ИСТОРИЮ ОБРАТНО В РЕПОЗИТОРИЙ
+      - name: Commit history
+        uses: stefanzweifel/git-auto-commit-action@v5
+        with:
+          commit_message: "Update news history"
+          file_pattern: history.json
