@@ -7,6 +7,7 @@ import xml.etree.ElementTree as ET
 import google.generativeai as genai
 from google.generativeai.types import RequestOptions
 from io import BytesIO
+import hashlib
 
 # Настройка Gemini
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
@@ -76,7 +77,6 @@ def get_news_from_feed(feed_url):
     return news_list
 
 def generate_post_text(title, link, description):
-    # ИСПРАВЛЕННЫЙ ПРОМТ: убрана нумерация, добавлены отступы
     prompt = (
         "Ты — редактор канала 'MEDIA'. Твой стиль: дерзко, коротко, без воды. "
         "Перепиши эту новость на русский язык. Сделай это ОЧЕНЬ КОРОТКО: максимум 3-4 предложения. "
@@ -90,7 +90,8 @@ def generate_post_text(title, link, description):
         "Ссылка: '🔗 [Источник](URL)'\n"
         "Хэштеги: 3-4 штуки (через пробел).\n\n"
         "ВАЖНО: В самом конце добавь скрытую строку [IMG: тег1, тег2, тег3] — "
-        "3-5 конкретных английских слов для поиска картинки."
+        "3-5 конкретных АНГЛИЙСКИХ слов для поиска картинки. ВАЖНО: НЕ пиши имена знаменитостей! "
+        "Опиши визуальную сцену или метафору новости (например: concert stage, paparazzi flashes, movie set, microphone, red carpet, courtroom)."
     )
     
     for attempt in range(3):
@@ -98,7 +99,6 @@ def generate_post_text(title, link, description):
             response = model.generate_content(prompt, request_options=RequestOptions(timeout=30.0))
             full_text = response.text
             
-            # Убираем возможные артефакты нумерации в начале (на всякий случай)
             full_text = re.sub(r"^\d+\.\s*", "", full_text.strip())
             
             img_match = re.search(r"\[IMG:\s*(.*?)\]", full_text, re.IGNORECASE)
@@ -174,11 +174,19 @@ if __name__ == "__main__":
     random.shuffle(FEEDS)
     all_news = []
     
+    # Множество для защиты от дубликатов в рамках одного запуска
+    seen_titles = set()
+    
     for feed in FEEDS:
         news_items = get_news_from_feed(feed)
-        all_news.extend(news_items[:3]) 
+        for news in news_items[:3]:
+            # Проверка на дубликат по хэшу заголовка
+            title_hash = hashlib.md5(news['title'].encode('utf-8')).hexdigest()
+            if title_hash not in seen_titles:
+                seen_titles.add(title_hash)
+                all_news.append(news)
     
-    print(f"Найдено новостей: {len(all_news)}")
+    print(f"Найдено уникальных новостей: {len(all_news)}")
     
     for index, news in enumerate(all_news):
         post_text, search_query = generate_post_text(news['title'], news['link'], news['description'])
