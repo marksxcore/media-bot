@@ -6,7 +6,6 @@ import requests
 import xml.etree.ElementTree as ET
 import google.generativeai as genai
 from google.generativeai.types import RequestOptions
-import hashlib
 
 # Настройка Gemini
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
@@ -61,25 +60,30 @@ def get_news_from_feed(feed_url):
     return news_list
 
 def generate_post_text(title, link, description):
-    # Тот самый промт, который тебе понравился
     prompt = (
         "Ты — редактор канала 'MEDIA'. Твой стиль: дерзко, коротко, без воды. "
         "Перепиши эту новость на русский язык. Сделай это ОЧЕНЬ КОРОТКО: максимум 3-4 предложения. "
         "Добавь эмодзи (3-5 штук), чтобы текст был живым.\n\n"
         f"Заголовок: {title}\nОписание: {description[:500]}\nСсылка: {link}\n\n"
-        "Формат ответа (СТРОГО без цифр и списков!):\n"
+        "Формат ответа (СТРОГО!):\n"
         "Яркий заголовок с эмодзи.\n"
         "Пустая строка.\n"
         "Текст (2-3 предложения) с эмодзи.\n"
         "Пустая строка.\n"
-        "Ссылка на источник (просто URL, без скобок).\n"
+        "Обязательно оформи ссылку так: '🔗 [Источник](ССЫЛКА)'\n"
         "Хэштеги: 3-4 штуки (через пробел).\n"
     )
     
     for attempt in range(3):
         try:
             response = model.generate_content(prompt, request_options=RequestOptions(timeout=30.0))
-            return response.text.strip()
+            full_text = response.text.strip()
+            
+            # СТРАХОВКА: Если Gemini оставил голый URL, прячем его в "Источник"
+            if "http" in full_text and "[Источник]" not in full_text:
+                full_text = re.sub(r"(https?://\S+)", r"🔗 [Источник](\1)", full_text)
+                
+            return full_text
         except Exception:
             time.sleep(3)
     return None
@@ -94,7 +98,7 @@ def send_to_telegram(text):
     
     try:
         url = f"https://api.telegram.org/bot{token}/sendMessage"
-        # ВКЛЮЧАЕМ ПРЕВЬЮ ССЫЛОК (False), чтобы Telegram подтянул картинку
+        # ВКЛЮЧАЕМ ПРЕВЬЮ ССЫЛОК (False)
         payload = {"chat_id": channel_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
         resp = requests.post(url, json=payload, timeout=30)
         
