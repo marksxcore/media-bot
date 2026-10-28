@@ -77,6 +77,7 @@ def get_news_from_feed(feed_url):
     return news_list
 
 def generate_post_text(title, link, description):
+    # ОБНОВЛЕННЫЙ ПРОМТ: четкие визуальные метафоры вместо имен звезд
     prompt = (
         "Ты — редактор канала 'MEDIA'. Твой стиль: дерзко, коротко, без воды. "
         "Перепиши эту новость на русский язык. Сделай это ОЧЕНЬ КОРОТКО: максимум 3-4 предложения. "
@@ -89,9 +90,12 @@ def generate_post_text(title, link, description):
         "Пустая строка.\n"
         "Ссылка: '🔗 [Источник](URL)'\n"
         "Хэштеги: 3-4 штуки (через пробел).\n\n"
-        "ВАЖНО: В самом конце добавь скрытую строку [IMG: тег1, тег2, тег3] — "
-        "3-5 конкретных АНГЛИЙСКИХ слов для поиска картинки. ВАЖНО: НЕ пиши имена знаменитостей! "
-        "Опиши визуальную сцену или метафору новости (например: concert stage, paparazzi flashes, movie set, microphone, red carpet, courtroom)."
+        "ВАЖНО: В самом конце добавь скрытую строку [IMG: тег1, тег2, тег3]. "
+        "НЕ пиши имена знаменитостей! Опиши ВИЗУАЛЬНУЮ СЦЕНУ, которая ассоциируется с новостью. "
+        "Например, если новость про суд — пиши 'courtroom, gavel, paparazzi flashes'. "
+        "Если про кино — 'movie premiere, red carpet, cinema lights'. "
+        "Если про музыку — 'concert stage, microphone, spotlights'. "
+        "Пиши только на английском и только конкретные сцены."
     )
     
     for attempt in range(3):
@@ -173,14 +177,11 @@ def send_to_telegram(text, image_bytes=None):
 if __name__ == "__main__":
     random.shuffle(FEEDS)
     all_news = []
-    
-    # Множество для защиты от дубликатов в рамках одного запуска
     seen_titles = set()
     
     for feed in FEEDS:
         news_items = get_news_from_feed(feed)
         for news in news_items[:3]:
-            # Проверка на дубликат по хэшу заголовка
             title_hash = hashlib.md5(news['title'].encode('utf-8')).hexdigest()
             if title_hash not in seen_titles:
                 seen_titles.add(title_hash)
