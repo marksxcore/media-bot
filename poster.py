@@ -12,19 +12,35 @@ from io import BytesIO
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-3.5-flash-lite")
 
-# Список источников
+# --- РАСШИРЕННЫЙ СПИСОК ИСТОЧНИКОВ ---
 FEEDS = [
     "https://variety.com/feed/",
     "https://www.hollywoodreporter.com/feed/",
     "https://www.rollingstone.com/music/music-news/feed/",
+    "https://www.rollingstone.com/culture/feed/",
+    "https://www.billboard.com/feed/",
+    "https://deadline.com/feed/",
+    "https://www.thewrap.com/feed/",
+    "https://netinfluencer.com/feed/",
+    "https://creatoriq.com/blog/rss.xml",
+    "https://www.adweek.com/category/influencer-marketing/feed/",
     "https://lenta.ru/rss/news",
-    "https://www.gazeta.ru/export/rss/first.xml"
+    "https://www.gazeta.ru/export/rss/first.xml",
+    "https://aif.ru/rss/culture.php",
+    "https://kulturomania.ru/feed/",
+    "https://dzen.ru/bloggg/rss",
+    "https://dzen.ru/russianteleweek.ru",
+    "https://www.comingsoon.net/feed",
+    "https://feeds.skynews.com/feeds/rss/entertainment.xml",
+    "https://variety.com/v/film/feed/",
+    "https://www.hollywoodreporter.com/c/movies/feed/"
 ]
 
 # Ключевые слова для российских СМИ
 CULTURE_KEYWORDS = [
     "кино", "фильм", "сериал", "музык", "песн", "альбом", "премьер", "трейлер", "режиссер", "актер",
-    "блогер", "тиктокер", "инфлюенсер", "стример", "тикток", "ютуб", "инстаграм", "контент", "ролик"
+    "блогер", "тиктокер", "инфлюенсер", "стример", "тикток", "ютуб", "инстаграм", "контент", "ролик",
+    "звезд", "артист", "шоу", "теле", "фестиваль", "концерт"
 ]
 
 # ЖЕСТКИЙ ФИЛЬТР ПОЛИТИКИ
@@ -34,10 +50,8 @@ BAD_WORDS = [
 ]
 
 def get_news_from_feed(feed_url):
-    """Берет ВСЕ подходящие новости из одной ленты."""
     news_list = []
     try:
-        print(f"Проверяем: {feed_url}")
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         response = requests.get(feed_url, timeout=15, headers=headers)
         response.raise_for_status()
@@ -48,29 +62,35 @@ def get_news_from_feed(feed_url):
             link = item.find("link").text or ""
             description = item.find("description").text or ""
             
-            # Фильтр политики
             if any(bad in (title + description).lower() for bad in BAD_WORDS):
                 continue
             
-            # Фильтр для российских СМИ
-            if "lenta" in feed_url or "gazeta" in feed_url:
+            if any(domain in feed_url for domain in ["lenta", "gazeta", "aif", "kulturomania", "dzen"]):
                 if not any(kw in (title + description).lower() for kw in CULTURE_KEYWORDS):
                     continue
             
             news_list.append({"title": title, "link": link, "description": description})
             
     except Exception as e:
-        print(f"Ошибка {feed_url}: {e}")
+        pass
     return news_list
 
 def generate_post_text(title, link, description):
+    # УСИЛЕННЫЙ ПРОМТ: делаем акцент на "интересности" и точных тегах для картинки
     prompt = (
-        "Ты — редактор канала 'MEDIA'. Твой стиль: индустрия без прикрас, без воды. "
-        "Перепиши эту новость на русский язык в 2-3 предложениях. "
-        "Добавь эмодзи и легкую иронию. В конце добавь ссылку на источник и 3-4 релевантных хэштега (например #кино #премьера #MEDIA).\n\n"
+        "Ты — крутой журналист-колумнист канала 'MEDIA'. Твой стиль: индустрия без прикрас, живой язык, легкая ирония, без сухих пресс-релизов. "
+        "Твоя задача — написать пост, который захочется дочитать до конца. "
+        "Перепиши эту новость на русский язык так, чтобы она звучала как увлекательная история. "
+        "Добавь много эмодзи (4-6 штук), чтобы текст был ярким. "
+        "В конце добавь ссылку на источник и 3-4 релевантных хэштега (например #кино #премьера #MEDIA).\n\n"
         f"Заголовок: {title}\nОписание: {description[:500]}\nСсылка: {link}\n\n"
-        "Формат: Заголовок с эмодзи, текст, ссылка '🔗 [Источник](URL)', хэштеги.\n"
-        "ВАЖНО: В самом конце добавь скрытую строку [IMG: слово1, слово2] для поиска картинки."
+        "Формат ответа:\n"
+        "1. Цепляющий заголовок с эмодзи.\n"
+        "2. Интересный текст (2-3 абзаца) с эмодзи.\n"
+        "3. Ссылка: '🔗 [Источник](URL)'\n"
+        "4. Хэштеги.\n\n"
+        "ВАЖНО: В самом конце, после хэштегов, добавь скрытую строку [IMG: тег1, тег2, тег3] — "
+        "3-5 конкретных английских слов, которые идеально описывают визуальный образ этой новости (например: cinema, red carpet, concert, celebrity, movie premiere)."
     )
     
     for attempt in range(3):
@@ -78,6 +98,7 @@ def generate_post_text(title, link, description):
             response = model.generate_content(prompt, request_options=RequestOptions(timeout=30.0))
             full_text = response.text
             
+            # Извлекаем теги для картинки
             img_match = re.search(r"\[IMG:\s*(.*?)\]", full_text, re.IGNORECASE)
             search_query = "entertainment"
             if img_match:
@@ -93,17 +114,30 @@ def generate_post_text(title, link, description):
 def get_image(query):
     api_key = os.environ.get("PIXABAY_API_KEY")
     if not api_key:
+        print("ОШИБКА: Не найден PIXABAY_API_KEY!")
         return None
 
     url = "https://pixabay.com/api/"
-    params = {"key": api_key, "q": query, "image_type": "photo", "orientation": "horizontal", "safesearch": "true", "per_page": 5}
+    # Увеличиваем выборку до 20 картинок, чтобы найти максимально подходящую
+    params = {
+        "key": api_key, 
+        "q": query, 
+        "image_type": "photo", 
+        "orientation": "horizontal", 
+        "safesearch": "true", 
+        "per_page": 20 
+    }
     try:
         response = requests.get(url, params=params, timeout=15)
         data = response.json()
         if data.get("hits"):
+            # Берем случайную из 20 найденных, чтобы картинки не повторялись
             photo_url = random.choice(data["hits"])["largeImageURL"]
             img_data = requests.get(photo_url, timeout=15).content
             return BytesIO(img_data)
+        else:
+            print(f"Pixabay не нашел фото по запросу: '{query}'")
+            return None
     except Exception as e:
         print(f"Ошибка Pixabay: {e}")
     return None
@@ -140,21 +174,18 @@ if __name__ == "__main__":
     random.shuffle(FEEDS)
     all_news = []
     
-    # Собираем новости со всех лент (берем до 5 новостей с каждого источника)
     for feed in FEEDS:
         news_items = get_news_from_feed(feed)
-        all_news.extend(news_items[:5]) 
+        all_news.extend(news_items[:3]) 
     
-    print(f"Найдено новостей для публикации: {len(all_news)}")
+    print(f"Найдено новостей: {len(all_news)}")
     
-    # Публикуем по очереди
     for index, news in enumerate(all_news):
         post_text, search_query = generate_post_text(news['title'], news['link'], news['description'])
         if post_text:
             img = get_image(search_query)
             send_to_telegram(post_text, img)
             
-            # Если это не последняя новость в списке, делаем паузу 30 секунд
             if index < len(all_news) - 1:
-                print("Ждем 30 секунд перед следующим постом...")
+                print("Ждем 30 секунд...")
                 time.sleep(30)
