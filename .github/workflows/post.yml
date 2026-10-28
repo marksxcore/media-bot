@@ -24,7 +24,8 @@ jobs:
           
       - name: Install dependencies
         run: |
-          pip install requests google-generativeai google-api-core
+          # ДОБАВЛЕНА БИБЛИОТЕКА beautifulsoup4
+          pip install requests google-generativeai google-api-core beautifulsoup4
           
       - name: Run script
         env:
