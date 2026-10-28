@@ -13,8 +13,9 @@ from io import BytesIO
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-3.5-flash-lite")
 
-# --- ПОЛНЫЙ СПИСОК ИСТОЧНИКОВ (18 ШТУК) ---
+# --- ПОЛНЫЙ СПИСОК ИСТОЧНИКОВ ---
 FEEDS = [
+    # Зарубежные гиганты
     "https://variety.com/feed/",
     "https://www.hollywoodreporter.com/feed/",
     "https://www.rollingstone.com/music/music-news/feed/",
@@ -25,22 +26,30 @@ FEEDS = [
     "https://netinfluencer.com/feed/",
     "https://creatoriq.com/blog/rss.xml",
     "https://www.adweek.com/category/influencer-marketing/feed/",
+    # Российские источники
     "https://lenta.ru/rss/news",
     "https://www.gazeta.ru/export/rss/first.xml",
     "https://aif.ru/rss/culture.php",
     "https://kulturomania.ru/feed/",
     "https://dzen.ru/bloggg/rss",
     "https://dzen.ru/russianteleweek.ru",
+    # SRSLY — медиа о блогерах и зумерах
+    "https://srsly.ru/rss/",
+    # Дополнительные развлекательные
     "https://www.comingsoon.net/feed",
     "https://feeds.skynews.com/feeds/rss/entertainment.xml"
 ]
 
 CULTURE_KEYWORDS = ["кино", "фильм", "сериал", "музык", "песн", "альбом", "премьер", "трейлер", "режиссер", "актер", "блогер", "тиктокер", "инфлюенсер", "стример", "контент", "звезд", "артист", "шоу", "фестиваль", "концерт"]
 
+# ЖЕСТКИЙ ФИЛЬТР (политика, тяжелые болезни)
 BAD_WORDS = [
+    # Политика и война
     "ukraine", "war", "politics", "military", "election", "poll", "voter", "president", "government", "parliament",
     "украин", "войн", "политик", "спецоперац", "выборы", "явка", "избирател", "парламент", "президент", "правительств", "госдума",
+    "кремль", "путин", "норвегия", "осло", "дипломатия", "нато", "санкции", "госдеп",
     "сербия", "белград", "премьер-министр", "кандидат", "оппозици",
+    # Тяжелые болезни
     "рак", "онкологи", "опухол", "химиотерап"
 ]
 
@@ -73,9 +82,11 @@ def get_news_from_feed(feed_url):
             link = item.find("link").text or ""
             
             if any(bad in (title + desc).lower() for bad in BAD_WORDS): continue
-            if any(domain in feed_url for domain in ["lenta", "gazeta", "aif", "kulturomania", "dzen"]):
+            # Для российских источников проверяем ключевые слова культуры (кроме SRSLY, где всё про блогеров)
+            if any(domain in feed_url for domain in ["lenta", "gazeta", "aif", "kulturomania", "dzen"]) and "srsly" not in feed_url:
                 if not any(kw in (title + desc).lower() for kw in CULTURE_KEYWORDS): continue
             
+            # Извлекаем картинку из RSS
             image_url = None
             enclosure = item.find("enclosure")
             if enclosure is not None:
@@ -96,15 +107,10 @@ def get_news_from_feed(feed_url):
     return news_list
 
 def is_duplicate(title, history):
-    """Проверяет, является ли новость дублем (с учетом истории)."""
-    # 1. Быстрая проверка по точному совпадению
     if title in history:
         return True
-    
-    # 2. Умная проверка через Gemini (последние 5 новостей)
     if not history:
         return False
-        
     recent = history[-5:]
     check_prompt = (
         f"Я собираюсь опубликовать новость с заголовком: '{title}'.\n"
@@ -112,7 +118,6 @@ def is_duplicate(title, history):
         "Это та же самая новость (просто другими словами) или абсолютно разное событие? "
         "Ответь строго одним словом: ДА (если это дубль) или НЕТ (если это новое событие)."
     )
-    
     try:
         response = model.generate_content(check_prompt, request_options=RequestOptions(timeout=10.0))
         answer = response.text.strip().upper()
@@ -122,7 +127,6 @@ def is_duplicate(title, history):
 
 def generate_post_text(title, link, description):
     is_sad_news = any(word in (title + description).lower() for word in ["умер", "смерть", "погиб", "dead", "death", "passed away"])
-    
     if is_sad_news:
         tone_instruction = (
             "ВАЖНО: Эта новость о смерти/трагедии. Пиши с уважением, без сарказма и иронии. "
@@ -146,15 +150,12 @@ def generate_post_text(title, link, description):
         "Обязательно оформи ссылку так: '🔗 [Источник](ССЫЛКА)'\n"
         "Хэштеги: 3-4 штуки (через пробел).\n"
     )
-    
     for attempt in range(3):
         try:
             response = model.generate_content(prompt, request_options=RequestOptions(timeout=30.0))
             full_text = response.text.strip()
-            
             if "http" in full_text and "[Источник]" not in full_text:
                 full_text = re.sub(r"(https?://\S+)", r"🔗 [Источник](\1)", full_text)
-                
             return full_text
         except Exception:
             time.sleep(3)
@@ -167,19 +168,7 @@ def send_to_telegram(text, image_url):
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
     
-    # 1. Пробуем отправить текст (Telegram сам подтянет превью)
-    try:
-        url_msg = f"https://api.telegram.org/bot{token}/sendMessage"
-        payload_msg = {"chat_id": channel_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
-        resp = requests.post(url_msg, json=payload_msg, timeout=30)
-        
-        if resp.status_code == 200:
-            print("Пост опубликован с превью!")
-            return
-    except Exception:
-        pass
-
-    # 2. Если что-то пошло не так, скачиваем картинку из RSS
+    # ПРИОРИТЕТ: Если в RSS есть картинка — скачиваем и отправляем как фото
     if image_url:
         try:
             img_response = requests.get(image_url, timeout=10)
@@ -193,8 +182,21 @@ def send_to_telegram(text, image_url):
             
             if resp_photo.status_code == 200:
                 print("Пост с картинкой из RSS опубликован!")
+                return
+            else:
+                print(f"Ошибка отправки фото: {resp_photo.text}")
         except Exception as e:
-            print(f"Ошибка отправки фото: {e}")
+            print(f"Не удалось скачать картинку: {e}")
+
+    # ЗАПАСНОЙ ВАРИАНТ: Если картинки нет или она не скачалась — отправляем текст (Telegram подтянет превью)
+    try:
+        url_msg = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload_msg = {"chat_id": channel_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
+        resp = requests.post(url_msg, json=payload_msg, timeout=30)
+        if resp.status_code == 200:
+            print("Пост опубликован (текст с превью)!")
+    except Exception as e:
+        print(f"Сбой отправки текста: {e}")
 
 if __name__ == "__main__":
     history = load_history()
