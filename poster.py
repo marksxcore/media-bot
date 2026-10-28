@@ -7,13 +7,13 @@ import xml.etree.ElementTree as ET
 import google.generativeai as genai
 from google.generativeai.types import RequestOptions
 from io import BytesIO
-import hashlib
+from urllib.parse import quote
 
 # Настройка Gemini
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 model = genai.GenerativeModel("gemini-3.5-flash-lite")
 
-# --- РАСШИРЕННЫЙ СПИСОК ИСТОЧНИКОВ (20 ШТУК) ---
+# Список источников
 FEEDS = [
     "https://variety.com/feed/",
     "https://www.hollywoodreporter.com/feed/",
@@ -37,114 +37,69 @@ FEEDS = [
     "https://www.hollywoodreporter.com/c/movies/feed/"
 ]
 
-# Ключевые слова для российских СМИ
-CULTURE_KEYWORDS = [
-    "кино", "фильм", "сериал", "музык", "песн", "альбом", "премьер", "трейлер", "режиссер", "актер",
-    "блогер", "тиктокер", "инфлюенсер", "стример", "тикток", "ютуб", "инстаграм", "контент", "ролик",
-    "звезд", "артист", "шоу", "теле", "фестиваль", "концерт"
-]
-
-# ЖЕСТКИЙ ФИЛЬТР ПОЛИТИКИ
-BAD_WORDS = [
-    "ukraine", "war", "politics", "military", "conflict", "election", "poll", "voter", "president", "government", "parliament",
-    "украин", "войн", "политик", "спецоперац", "выборы", "явка", "избирател", "парламент", "президент", "правительств", "госдума"
-]
+CULTURE_KEYWORDS = ["кино", "фильм", "сериал", "музык", "песн", "альбом", "премьер", "трейлер", "режиссер", "актер", "блогер", "тиктокер", "инфлюенсер", "стример", "контент", "звезд", "артист", "шоу", "фестиваль", "концерт"]
+BAD_WORDS = ["ukraine", "war", "politics", "military", "election", "poll", "voter", "president", "government", "украин", "войн", "политик", "спецоперац", "выборы", "явка", "избирател", "президент", "правительств", "госдума"]
 
 def get_news_from_feed(feed_url):
     news_list = []
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         response = requests.get(feed_url, timeout=15, headers=headers)
-        response.raise_for_status()
         root = ET.fromstring(response.content)
-        
         for item in root.findall(".//item"):
             title = item.find("title").text or ""
+            desc = item.find("description").text or ""
             link = item.find("link").text or ""
-            description = item.find("description").text or ""
-            
-            if any(bad in (title + description).lower() for bad in BAD_WORDS):
-                continue
-            
+            if any(bad in (title + desc).lower() for bad in BAD_WORDS): continue
             if any(domain in feed_url for domain in ["lenta", "gazeta", "aif", "kulturomania", "dzen"]):
-                if not any(kw in (title + description).lower() for kw in CULTURE_KEYWORDS):
-                    continue
-            
-            news_list.append({"title": title, "link": link, "description": description})
-            
+                if not any(kw in (title + desc).lower() for kw in CULTURE_KEYWORDS): continue
+            news_list.append({"title": title, "link": link, "description": desc})
     except Exception as e:
         pass
     return news_list
 
 def generate_post_text(title, link, description):
-    # ОБНОВЛЕННЫЙ ПРОМТ: четкие визуальные метафоры вместо имен звезд
     prompt = (
         "Ты — редактор канала 'MEDIA'. Твой стиль: дерзко, коротко, без воды. "
         "Перепиши эту новость на русский язык. Сделай это ОЧЕНЬ КОРОТКО: максимум 3-4 предложения. "
-        "Текст должен быть ярким, с легкой иронией и эмодзи (3-5 штук). Никаких длинных абзацев.\n\n"
+        "Добавь эмодзи (3-5 штук).\n\n"
         f"Заголовок: {title}\nОписание: {description[:500]}\nСсылка: {link}\n\n"
-        "Формат ответа (СТРОГО без цифр и списков!):\n"
-        "Яркий заголовок с эмодзи.\n"
-        "Пустая строка.\n"
-        "Текст (2-3 предложения) с эмодзи.\n"
-        "Пустая строка.\n"
-        "Ссылка: '🔗 [Источник](URL)'\n"
-        "Хэштеги: 3-4 штуки (через пробел).\n\n"
-        "ВАЖНО: В самом конце добавь скрытую строку [IMG: тег1, тег2, тег3]. "
-        "НЕ пиши имена знаменитостей! Опиши ВИЗУАЛЬНУЮ СЦЕНУ, которая ассоциируется с новостью. "
-        "Например, если новость про суд — пиши 'courtroom, gavel, paparazzi flashes'. "
-        "Если про кино — 'movie premiere, red carpet, cinema lights'. "
-        "Если про музыку — 'concert stage, microphone, spotlights'. "
-        "Пиши только на английском и только конкретные сцены."
+        "Формат (СТРОГО): Заголовок с эмодзи. Пустая строка. Текст. Пустая строка. '🔗 [Источник](URL)'. Хэштеги (3-4).\n\n"
+        "ВАЖНО: В самом конце добавь скрытую строку [IMG: тег1, тег2]. "
+        "НЕ пиши имена знаменитостей! Опиши ВИЗУАЛЬНУЮ СЦЕНУ для генерации обложки (например: neon microphone in smoke, dark courtroom gavel, cinematic red carpet lights, abstract movie film reel)."
     )
     
     for attempt in range(3):
         try:
             response = model.generate_content(prompt, request_options=RequestOptions(timeout=30.0))
             full_text = response.text
-            
             full_text = re.sub(r"^\d+\.\s*", "", full_text.strip())
             
             img_match = re.search(r"\[IMG:\s*(.*?)\]", full_text, re.IGNORECASE)
-            search_query = "entertainment"
+            search_query = "dark cinematic abstract background"
             if img_match:
                 search_query = img_match.group(1).strip()
                 full_text = full_text.replace(img_match.group(0), "").strip()
-            
             return full_text, search_query
         except Exception as e:
-            print(f"Ошибка Gemini (попытка {attempt+1}): {e}")
             time.sleep(3)
     return None, None
 
-def get_image(query):
-    api_key = os.environ.get("PIXABAY_API_KEY")
-    if not api_key:
-        print("ОШИБКА: Не найден PIXABAY_API_KEY!")
-        return None
-
-    url = "https://pixabay.com/api/"
-    params = {
-        "key": api_key, 
-        "q": query, 
-        "image_type": "photo", 
-        "orientation": "horizontal", 
-        "safesearch": "true", 
-        "per_page": 20 
-    }
+def generate_image(query):
+    print(f"Генерируем обложку по запросу: {query}")
+    # Усилитель стиля: темный, дорогой, кинематографичный
+    style_boost = ", dark moody cinematic lighting, neon accents, highly detailed, 8k resolution, photorealistic, dramatic shadows, masterpiece"
+    full_prompt = query + style_boost
+    
     try:
-        response = requests.get(url, params=params, timeout=15)
-        data = response.json()
-        if data.get("hits"):
-            photo_url = random.choice(data["hits"])["largeImageURL"]
-            img_data = requests.get(photo_url, timeout=15).content
-            return BytesIO(img_data)
-        else:
-            print(f"Pixabay не нашел фото по запросу: '{query}'")
-            return None
+        encoded_prompt = quote(full_prompt)
+        url = f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=576&nologo=true&model=flux&seed={random.randint(1, 999999)}"
+        response = requests.get(url, timeout=30)
+        response.raise_for_status()
+        return BytesIO(response.content)
     except Exception as e:
-        print(f"Ошибка Pixabay: {e}")
-    return None
+        print(f"Ошибка генерации: {e}")
+        return None
 
 def send_to_telegram(text, image_bytes=None):
     token = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -166,13 +121,10 @@ def send_to_telegram(text, image_bytes=None):
         
         if resp.status_code == 200:
             print("Пост опубликован!")
-            return True
         else:
             print(f"Ошибка Telegram: {resp.text}")
-            return False
     except Exception as e:
         print(f"Сбой отправки: {e}")
-        return False
 
 if __name__ == "__main__":
     random.shuffle(FEEDS)
@@ -182,19 +134,17 @@ if __name__ == "__main__":
     for feed in FEEDS:
         news_items = get_news_from_feed(feed)
         for news in news_items[:3]:
-            title_hash = hashlib.md5(news['title'].encode('utf-8')).hexdigest()
-            if title_hash not in seen_titles:
-                seen_titles.add(title_hash)
+            if news['title'] not in seen_titles:
+                seen_titles.add(news['title'])
                 all_news.append(news)
     
-    print(f"Найдено уникальных новостей: {len(all_news)}")
+    print(f"Найдено новостей: {len(all_news)}")
     
     for index, news in enumerate(all_news):
-        post_text, search_query = generate_post_text(news['title'], news['link'], news['description'])
+        post_text, img_query = generate_post_text(news['title'], news['link'], news['description'])
         if post_text:
-            img = get_image(search_query)
+            img = generate_image(img_query)
             send_to_telegram(post_text, img)
-            
             if index < len(all_news) - 1:
                 print("Ждем 30 секунд...")
                 time.sleep(30)
