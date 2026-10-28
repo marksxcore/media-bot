@@ -2,8 +2,8 @@ name: MEDIA Bot
 
 on:
   schedule:
-    # Запуск каждые 30 минут (пока для теста)
-    - cron: '*/30 * * * *'
+    # Запуск каждые 15 минут
+    - cron: '*/15 * * * *'
   workflow_dispatch: # Кнопка для ручного запуска
 
 jobs:
@@ -11,13 +11,19 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-      - run: pip install requests google-generativeai google-api-core
+          
+      - name: Install dependencies
+        run: |
+          pip install requests google-generativeai google-api-core
+          
       - name: Run script
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: python poster.py
