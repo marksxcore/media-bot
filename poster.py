@@ -8,7 +8,7 @@ import xml.etree.ElementTree as ET
 import google.generativeai as genai
 from google.generativeai.types import RequestOptions
 from io import BytesIO
-from bs4 import BeautifulSoup # НОВАЯ БИБЛИОТЕКА
+from bs4 import BeautifulSoup
 
 # Настройка Gemini
 genai.configure(api_key=os.environ["GEMINI_API_KEY"])
@@ -39,11 +39,14 @@ FEEDS = [
 
 CULTURE_KEYWORDS = ["кино", "фильм", "сериал", "музык", "песн", "альбом", "премьер", "трейлер", "режиссер", "актер", "блогер", "тиктокер", "инфлюенсер", "стример", "контент", "звезд", "артист", "шоу", "фестиваль", "концерт"]
 
+# ЖЕСТКИЙ ФИЛЬТР ПОЛИТИКИ (добавлены имена и структуры)
 BAD_WORDS = [
     "ukraine", "war", "politics", "military", "election", "poll", "voter", "president", "government", "parliament",
     "украин", "войн", "политик", "спецоперац", "выборы", "явка", "избирател", "парламент", "президент", "правительств", "госдума",
     "кремль", "путин", "норвегия", "осло", "дипломатия", "нато", "санкции", "госдеп",
     "сербия", "белград", "премьер-министр", "кандидат", "оппозици",
+    "трамп", "байден", "белый дом", "администрация", "республиканц", "демократ", "конгресс", "сенат",
+    # Тяжелые болезни
     "рак", "онкологи", "опухол", "химиотерап"
 ]
 
@@ -79,7 +82,6 @@ def get_news_from_feed(feed_url):
             if any(domain in feed_url for domain in ["lenta", "gazeta", "aif", "kulturomania", "dzen"]) and "srsly" not in feed_url:
                 if not any(kw in (title + desc).lower() for kw in CULTURE_KEYWORDS): continue
             
-            # Пытаемся найти картинку в RSS
             image_url = None
             enclosure = item.find("enclosure")
             if enclosure is not None:
@@ -100,26 +102,20 @@ def get_news_from_feed(feed_url):
     return news_list
 
 def get_image_from_article(article_url):
-    """Если картинки нет в RSS, парсим саму статью и ищем там картинку."""
     try:
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
         response = requests.get(article_url, timeout=10, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Ищем теги og:image (мета-тег с картинкой, который используют все сайты)
         og_image = soup.find("meta", property="og:image")
         if og_image and og_image.get("content"):
             return og_image["content"]
-            
-        # Если og:image нет, ищем первую большую картинку на странице
         for img in soup.find_all("img"):
             src = img.get("src") or img.get("data-src")
             if src and src.startswith("http") and (".jpg" in src or ".png" in src or ".jpeg" in src):
-                # Игнорируем маленькие иконки и логотипы
                 if "logo" not in src.lower() and "icon" not in src.lower() and "avatar" not in src.lower():
                     return src
-    except Exception as e:
-        print(f"Ошибка парсинга статьи: {e}")
+    except Exception:
+        pass
     return None
 
 def is_duplicate(title, history):
@@ -142,21 +138,13 @@ def is_duplicate(title, history):
         return False
 
 def generate_post_text(title, link, description):
-    is_sad_news = any(word in (title + description).lower() for word in ["умер", "смерть", "погиб", "dead", "death", "passed away"])
-    if is_sad_news:
-        tone_instruction = (
-            "ВАЖНО: Эта новость о смерти/трагедии. Пиши с уважением, без сарказма и иронии. "
-            "Используй ТОЛЬКО сдержанные эмодзи (свеча 🕯, разбитое сердце 💔). НИКАКИХ шуток."
-        )
-    else:
-        tone_instruction = (
-            "Твой стиль: дерзко, коротко, без воды. Добавь эмодзи (3-5 штук), чтобы текст был живым. "
-            "Используй только тематические эмодзи. КАТЕГОРИЧЕСКИ НЕ ИСПОЛЬЗУЙ медицинские эмодзи."
-        )
-
+    # Просим Gemini самого определить тон новости, без "тупого" поиска слов
     prompt = (
-        f"Ты — редактор канала 'MEDIA'. {tone_instruction}\n"
-        "Перепиши эту новость на русский язык. Сделай это ОЧЕНЬ КОРОТКО: максимум 3-4 предложения.\n\n"
+        "Ты — редактор канала 'MEDIA'. Твой стиль: дерзко, коротко, без воды. "
+        "Прочитай эту новость. Если она о смерти или трагедии — напиши сдержанно, без шуток и иронии (используй эмодзи 🕯 или 💔). "
+        "Если это обычная новость (премьера, скандал, съемки, музыка) — пиши в нашем дерзком стиле, добавь 3-5 тематических эмодзи. "
+        "КАТЕГОРИЧЕСКИ НЕ ИСПОЛЬЗУЙ медицинские эмодзи (таблетки, шприцы).\n\n"
+        "ВАЖНО: Твой ответ должен быть ТОЛЬКО готовым постом. Никаких фраз вроде 'Уважаемый читатель', 'В предоставленном тексте' или оправданий.\n\n"
         f"Заголовок: {title}\nОписание: {description[:500]}\nСсылка: {link}\n\n"
         "Формат ответа (СТРОГО!):\n"
         "Яркий заголовок с эмодзи.\n"
@@ -164,12 +152,18 @@ def generate_post_text(title, link, description):
         "Текст (2-3 предложения) с эмодзи.\n"
         "Пустая строка.\n"
         "Обязательно оформи ссылку так: '🔗 [Источник](ССЫЛКА)'\n"
-        "Хэштеги: 3-4 штуки (через пробел).\n"
+        "Хэштеги: 3-4 штуки (через пробел, без #политика).\n"
     )
+    
     for attempt in range(3):
         try:
             response = model.generate_content(prompt, request_options=RequestOptions(timeout=30.0))
             full_text = response.text.strip()
+            
+            # Чистим возможные галлюцинации
+            full_text = re.sub(r"Уважаемый читатель.*?\n", "", full_text, flags=re.DOTALL)
+            full_text = re.sub(r"В предоставленном.*?\n", "", full_text, flags=re.DOTALL)
+            
             if "http" in full_text and "[Источник]" not in full_text:
                 full_text = re.sub(r"(https?://\S+)", r"🔗 [Источник](\1)", full_text)
             return full_text
@@ -184,7 +178,6 @@ def send_to_telegram(text, image_url):
     text = re.sub(r"\[([^\]]+)\]\(([^)]+)\)", r'<a href="\2">\1</a>', text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<b>\1</b>", text, flags=re.DOTALL)
     
-    # ОТПРАВЛЯЕМ ТОЛЬКО ЕСЛИ ЕСТЬ КАРТИНКА
     if image_url:
         try:
             img_response = requests.get(image_url, timeout=10)
@@ -195,23 +188,18 @@ def send_to_telegram(text, image_url):
             files = {'photo': ('image.jpg', BytesIO(img_data), 'image/jpeg')}
             data = {'chat_id': channel_id, 'caption': text, 'parse_mode': 'HTML'}
             resp_photo = requests.post(url_photo, data=data, files=files, timeout=30)
-            
             if resp_photo.status_code == 200:
                 print("Пост с картинкой опубликован!")
-            else:
-                print(f"Ошибка отправки фото: {resp_photo.text}")
         except Exception as e:
             print(f"Не удалось скачать картинку: {e}")
-    else:
-        # Если картинки нет нигде, отправляем текст с превью (чтобы пост не был пустым)
-        try:
+            # Если фото не удалось, отправляем текст
             url_msg = f"https://api.telegram.org/bot{token}/sendMessage"
             payload_msg = {"chat_id": channel_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
-            resp = requests.post(url_msg, json=payload_msg, timeout=30)
-            if resp.status_code == 200:
-                print("Пост опубликован (текст без картинки).")
-        except Exception as e:
-            print(f"Сбой отправки текста: {e}")
+            requests.post(url_msg, json=payload_msg, timeout=30)
+    else:
+        url_msg = f"https://api.telegram.org/bot{token}/sendMessage"
+        payload_msg = {"chat_id": channel_id, "text": text, "parse_mode": "HTML", "disable_web_page_preview": False}
+        requests.post(url_msg, json=payload_msg, timeout=30)
 
 if __name__ == "__main__":
     history = load_history()
@@ -233,12 +221,8 @@ if __name__ == "__main__":
             print(f"Дубль пропущен: {news['title'][:30]}...")
             continue
         
-        # ЛОГИКА КАРТИНОК
         image_url = news['image_url']
-        
-        # Если в RSS нет картинки — идем парсить статью
         if not image_url:
-            print(f"Картинки в RSS нет. Ищем в статье: {news['link'][:50]}...")
             image_url = get_image_from_article(news['link'])
             
         post_text = generate_post_text(news['title'], news['link'], news['description'])
